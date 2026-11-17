@@ -1,57 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
-import play from "play-dl";
+
+// Открытые европейские зеркала Invidious
+const INVIDIOUS_INSTANCES = [
+  "https://vid.puffyan.us",
+  "https://invidious.jing.rocks",
+  "https://invidious.nerdvpn.de",
+  "https://inv.tux.pizza"
+];
 
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     const title = searchParams.get("title");
     const artist = searchParams.get("artist");
-    const isPlayRequest = searchParams.get("play") === "true";
 
     if (!title || !artist) {
-      return NextResponse.json({ error: "Missing required parameters" }, { status: 400 });
+      return NextResponse.json({ error: "Missing parameters" }, { status: 400 });
     }
 
-    const searchQuery = `${artist} ${title}`;
+    const searchQuery = `${artist} ${title} audio`;
+    let streamUrl = null;
 
-    try {
-      // Инициализируем токен для работы на серверах Vercel
-      const clientId = await play.getFreeClientID();
-      await play.setToken({ soundcloud: { client_id: clientId } });
+    for (const instance of INVIDIOUS_INSTANCES) {
+      try {
+        // 1. Быстрый поиск через API
+        const searchRes = await fetch(`${instance}/api/v1/search?q=${encodeURIComponent(searchQuery)}`, { cache: 'no-store' });
+        if (!searchRes.ok) continue;
 
-      const searchResults = await play.search(searchQuery, {
-        limit: 1,
-        source: { soundcloud: "tracks" }
-      });
+        const results = await searchRes.json();
+        const video = results.find((v: any) => v.type === 'video');
+        if (!video) continue;
 
-      if (!searchResults || searchResults.length === 0) {
-        return NextResponse.json({ error: "No audio found" }, { status: 404 });
+        // 2. Формируем прямую ссылку на проксированный аудиопоток 
+        // (itag=140 это стандартный качественный аудиопоток M4A/AAC)
+        streamUrl = `${instance}/latest_version?id=${video.videoId}&itag=140`;
+        break; 
+      } catch (e) {
+        continue;
       }
-
-      const track = searchResults[0];
-
-      // Если запрос делает тег <audio>, транслируем поток напрямую
-      if (isPlayRequest) {
-        const streamData = await play.stream(track.url);
-        return new NextResponse(streamData.stream as any, {
-          status: 200,
-          headers: {
-            "Content-Type": "audio/mpeg",
-            "Transfer-Encoding": "chunked",
-          },
-        });
-      }
-
-      // Если запрос делает React, отдаем ссылку на проксированный поток
-      return NextResponse.json({
-        url: `/api/audio?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}&play=true`,
-        title: track.name || title,
-      }, { status: 200 });
-      
-    } catch (scError) {
-      console.error("SoundCloud error:", scError);
-      return NextResponse.json({ error: "Failed to retrieve audio" }, { status: 500 });
     }
+
+    if (!streamUrl) {
+      return NextResponse.json({ error: "Не удалось найти аудио" }, { status: 502 });
+    }
+
+    // Возвращаем прямую ссылку фронтенду, а он уже вставит её в тег <audio src="...">
+    return NextResponse.json({ url: streamUrl, title: title }, { status: 200 });
+
   } catch (error) {
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
