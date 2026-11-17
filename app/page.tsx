@@ -29,19 +29,19 @@ export default function Home() {
     setAudioUrl(null);
 
     try {
-      // Step 1: Fetch track metadata from Spotify
+      // Step 1: Fetch track metadata
       const spotifyResponse = await fetch(
         `/api/spotify?q=${encodeURIComponent(searchQuery)}`
       );
 
       if (!spotifyResponse.ok) {
-        throw new Error("Track not found on Spotify");
+        throw new Error("Track not found");
       }
 
       const track: TrackData = await spotifyResponse.json();
       setTrackData(track);
 
-      // Step 2: Fetch audio URL from YouTube
+      // Step 2: Fetch audio URL
       const audioResponse = await fetch(
         `/api/audio?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(
           track.artist
@@ -49,7 +49,7 @@ export default function Home() {
       );
 
       if (!audioResponse.ok) {
-        throw new Error("Could not find audio on YouTube");
+        throw new Error("Could not find audio on servers");
       }
 
       const audioData = await audioResponse.json();
@@ -146,10 +146,14 @@ export default function Home() {
                   </div>
                   <p className="text-xs text-textSecondary text-center">🎵 Now playing</p>
                 </div>
-              ) : (
+              ) : loading ? (
                 <div className="bg-background rounded-lg p-8 border border-surface flex items-center justify-center">
                   <div className="h-8 w-8 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
                   <span className="ml-3 text-textSecondary">Finding audio...</span>
+                </div>
+              ) : (
+                <div className="bg-background rounded-lg p-8 border border-surface flex items-center justify-center">
+                  <span className="text-red-400 text-sm">Аудиопоток недоступен</span>
                 </div>
               )}
             </div>
