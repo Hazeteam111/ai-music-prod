@@ -1,57 +1,57 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const PIPED_INSTANCES = [
-  "https://pipedapi.kavin.rocks",
-  "https://pipedapi.moomoo.me",
-  "https://pipedapi.syncpundit.io"
-];
+import play from "play-dl";
 
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     const title = searchParams.get("title");
     const artist = searchParams.get("artist");
+    const isPlayRequest = searchParams.get("play") === "true";
 
     if (!title || !artist) {
-      return NextResponse.json({ error: "Missing parameters" }, { status: 400 });
+      return NextResponse.json({ error: "Missing required parameters" }, { status: 400 });
     }
 
-    const searchQuery = `${artist} ${title} audio`;
-    let streamUrl = null;
+    const searchQuery = `${artist} ${title}`;
 
-    for (const apiBase of PIPED_INSTANCES) {
-      try {
-        const searchRes = await fetch(`${apiBase}/search?q=${encodeURIComponent(searchQuery)}&filter=all`, { cache: 'no-store' });
-        if (!searchRes.ok) continue; 
-        
-        const searchData = await searchRes.json();
-        const video = searchData.items?.find((item: any) => item.type === 'stream');
-        if (!video) continue;
+    try {
+      // Инициализируем токен для работы на серверах Vercel
+      const clientId = await play.getFreeClientID();
+      await play.setToken({ soundcloud: { client_id: clientId } });
 
-        const videoId = video.url.split('?v=')[1];
-        
-        const streamRes = await fetch(`${apiBase}/streams/${videoId}`, { cache: 'no-store' });
-        if (!streamRes.ok) continue;
-        
-        const streamData = await streamRes.json();
-        const audioStreams = streamData.audioStreams;
-        
-        if (audioStreams && audioStreams.length > 0) {
-          const bestAudio = audioStreams.sort((a: any, b: any) => b.bitrate - a.bitrate)[0];
-          streamUrl = bestAudio.url;
-          break; 
-        }
-      } catch (e) {
-        continue;
+      const searchResults = await play.search(searchQuery, {
+        limit: 1,
+        source: { soundcloud: "tracks" }
+      });
+
+      if (!searchResults || searchResults.length === 0) {
+        return NextResponse.json({ error: "No audio found" }, { status: 404 });
       }
-    }
 
-    if (!streamUrl) {
-      return NextResponse.json({ error: "Не удалось найти аудио на зеркалах" }, { status: 502 });
-    }
+      const track = searchResults[0];
 
-    return NextResponse.json({ url: streamUrl, title: title }, { status: 200 });
-    
+      // Если запрос делает тег <audio>, транслируем поток напрямую
+      if (isPlayRequest) {
+        const streamData = await play.stream(track.url);
+        return new NextResponse(streamData.stream as any, {
+          status: 200,
+          headers: {
+            "Content-Type": "audio/mpeg",
+            "Transfer-Encoding": "chunked",
+          },
+        });
+      }
+
+      // Если запрос делает React, отдаем ссылку на проксированный поток
+      return NextResponse.json({
+        url: `/api/audio?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist)}&play=true`,
+        title: track.name || title,
+      }, { status: 200 });
+      
+    } catch (scError) {
+      console.error("SoundCloud error:", scError);
+      return NextResponse.json({ error: "Failed to retrieve audio" }, { status: 500 });
+    }
   } catch (error) {
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
