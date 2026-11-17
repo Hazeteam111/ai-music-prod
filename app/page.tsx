@@ -10,6 +10,14 @@ interface TrackData {
   coverUrl: string | null;
 }
 
+// Открытые зеркала для прямых клиентских запросов (CORS разрешен)
+const PIPED_INSTANCES = [
+  "https://pipedapi.kavin.rocks",
+  "https://pipedapi.smnz.de",
+  "https://pipedapi.adminforge.de",
+  "https://pipedapi.moomoo.me"
+];
+
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [trackData, setTrackData] = useState<TrackData | null>(null);
@@ -19,7 +27,7 @@ export default function Home() {
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) {
-      setError("Please enter a song name or artist");
+      setError("Введите название песни или артиста");
       return;
     }
 
@@ -29,35 +37,41 @@ export default function Home() {
     setAudioUrl(null);
 
     try {
-      // Step 1: Fetch track metadata
-      const spotifyResponse = await fetch(
-        `/api/spotify?q=${encodeURIComponent(searchQuery)}`
-      );
-
-      if (!spotifyResponse.ok) {
-        throw new Error("Track not found");
-      }
-
-      const track: TrackData = await spotifyResponse.json();
+      // Шаг 1: Получаем красивую обложку и название (через наш бэкенд)
+      const metaResponse = await fetch(`/api/spotify?q=${encodeURIComponent(searchQuery)}`);
+      if (!metaResponse.ok) throw new Error("Трек не найден в базе");
+      const track: TrackData = await metaResponse.json();
       setTrackData(track);
 
-      // Step 2: Fetch audio URL
-      const audioResponse = await fetch(
-        `/api/audio?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(
-          track.artist
-        )}`
+      // Шаг 2: Ищем аудио НАПРЯМУЮ ИЗ БРАУЗЕРА (обходя блокировки Vercel)
+      const query = `${track.artist} ${track.title} audio`;
+      
+      const streamUrl = await Promise.any(
+        PIPED_INSTANCES.map(async (apiBase) => {
+          const searchRes = await fetch(`${apiBase}/search?q=${encodeURIComponent(query)}&filter=all`);
+          if (!searchRes.ok) throw new Error("Search fail");
+          
+          const searchData = await searchRes.json();
+          const video = searchData.items?.find((item: any) => item.type === 'stream');
+          if (!video) throw new Error("No video");
+
+          const videoId = video.url.split('v=')[1]?.split('&')[0];
+          const streamRes = await fetch(`${apiBase}/streams/${videoId}`);
+          const streamData = await streamRes.json();
+          
+          const bestAudio = streamData.audioStreams?.find((s: any) => s.mimeType?.includes('audio/mp4')) 
+                         || streamData.audioStreams?.sort((a: any, b: any) => b.bitrate - a.bitrate)[0];
+                         
+          if (!bestAudio?.url) throw new Error("No url");
+          return bestAudio.url;
+        })
       );
 
-      if (!audioResponse.ok) {
-        throw new Error("Could not find audio on servers");
-      }
+      setAudioUrl(streamUrl);
 
-      const audioData = await audioResponse.json();
-      setAudioUrl(audioData.url);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "An error occurred. Please try again."
-      );
+      console.error(err);
+      setError("Аудиопоток временно недоступен. Попробуйте другой трек.");
     } finally {
       setLoading(false);
     }
@@ -75,7 +89,7 @@ export default function Home() {
       <div className="text-center mb-12">
         <h1 className="text-5xl font-bold text-textPrimary mb-2">AI Music</h1>
         <p className="text-textSecondary text-lg">
-          Spotify metadata × YouTube audio
+          Deezer metadata × Piped Direct Audio
         </p>
       </div>
 
@@ -84,7 +98,7 @@ export default function Home() {
         <div className="flex gap-2">
           <input
             type="text"
-            placeholder="Search a song or artist..."
+            placeholder="Поиск песни или артиста..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyPress={handleKeyPress}
@@ -95,7 +109,7 @@ export default function Home() {
             disabled={loading}
             className="px-6 py-3 bg-accent hover:bg-accentHover disabled:bg-textSecondary text-black font-semibold rounded-lg transition-colors duration-200"
           >
-            {loading ? "Searching..." : "Search"}
+            {loading ? "Ищем..." : "Найти"}
           </button>
         </div>
       </div>
@@ -141,15 +155,15 @@ export default function Home() {
                       style={{ accentColor: "#1db954" }}
                     >
                       <source src={audioUrl} />
-                      Your browser does not support the audio element.
+                      Браузер не поддерживает плеер.
                     </audio>
                   </div>
-                  <p className="text-xs text-textSecondary text-center">🎵 Now playing</p>
+                  <p className="text-xs text-textSecondary text-center">🎵 Сейчас играет</p>
                 </div>
               ) : loading ? (
                 <div className="bg-background rounded-lg p-8 border border-surface flex items-center justify-center">
                   <div className="h-8 w-8 border-2 border-accent border-t-transparent rounded-full animate-spin"></div>
-                  <span className="ml-3 text-textSecondary">Finding audio...</span>
+                  <span className="ml-3 text-textSecondary">Подключаем аудиопоток...</span>
                 </div>
               ) : (
                 <div className="bg-background rounded-lg p-8 border border-surface flex items-center justify-center">
@@ -163,7 +177,7 @@ export default function Home() {
             onClick={() => { setSearchQuery(""); setTrackData(null); setAudioUrl(null); setError(null); }}
             className="w-full mt-4 px-4 py-2 text-textSecondary hover:text-textPrimary border border-textSecondary hover:border-textPrimary rounded-lg transition-colors"
           >
-            ← Search Another Song
+            ← Найти другой трек
           </button>
         </div>
       )}
@@ -171,7 +185,7 @@ export default function Home() {
       {!trackData && !loading && (
         <div className="text-center text-textSecondary">
           <div className="text-5xl mb-4">🎶</div>
-          <p>Start searching for your favorite song</p>
+          <p>Введи название трека, чтобы начать</p>
         </div>
       )}
     </main>
