@@ -1,0 +1,5 @@
+{"timestamp":"00:00:04.901","source":"Server","level":"LOG","message":""}
+{"timestamp":"00:00:10.710","source":"Browser","level":"INFO","message":"Download the React DevTools for a better development experience: https://react.dev/link/react-devtools"}
+{"timestamp":"00:00:24.725","source":"Browser","level":"INFO","message":"Download the React DevTools for a better development experience: https://react.dev/link/react-devtools"}
+{"timestamp":"00:00:50.425","source":"Browser","level":"WARN","message":"Image with src \"https://cdn-images.dzcdn.net/images/cover/122d449ef82ddcf5694d028e9df28674/1000x1000-000000-80-0-0.jpg\" has \"fill\" but is missing \"sizes\" prop. Please add it to improve page performance. Read more: https://nextjs.org/docs/api-reference/next/image#sizes"}
+{"timestamp":"00:00:50.446","source":"Server","level":"WARN","message":"[browser] \"\\u001b[33mImage with src \\\"https://cdn-images.dzcdn.net/images/cover/122d449ef82ddcf5694d028e9df28674/1000x1000-000000-80-0-0.jpg\\\" has \\\"fill\\\" but is missing \\\"sizes\\\" prop. Please add it to improve page performance. Read more: https://nextjs.org/docs/api-reference/next/image#sizes\\u001b[39m\""}
