@@ -10,7 +10,6 @@ interface TrackData {
   coverUrl: string | null;
 }
 
-// Открытые зеркала для прямых клиентских запросов (CORS разрешен)
 const PIPED_INSTANCES = [
   "https://pipedapi.kavin.rocks",
   "https://pipedapi.smnz.de",
@@ -37,32 +36,50 @@ export default function Home() {
     setAudioUrl(null);
 
     try {
-      // Шаг 1: Получаем красивую обложку и название (через наш бэкенд)
+      // Шаг 1: Метаданные (обложка и точное название) идут через наш бэкенд
       const metaResponse = await fetch(`/api/spotify?q=${encodeURIComponent(searchQuery)}`);
       if (!metaResponse.ok) throw new Error("Трек не найден в базе");
       const track: TrackData = await metaResponse.json();
       setTrackData(track);
 
-      // Шаг 2: Ищем аудио НАПРЯМУЮ ИЗ БРАУЗЕРА (обходя блокировки Vercel)
+      // Шаг 2: Ищем аудио, оборачивая запросы в AllOrigins для обхода CORS
       const query = `${track.artist} ${track.title} audio`;
       
       const streamUrl = await Promise.any(
         PIPED_INSTANCES.map(async (apiBase) => {
-          const searchRes = await fetch(`${apiBase}/search?q=${encodeURIComponent(query)}&filter=all`);
-          if (!searchRes.ok) throw new Error("Search fail");
+          // Запрос поиска оборачиваем в CORS-прокси
+          const searchTarget = `${apiBase}/search?q=${encodeURIComponent(query)}&filter=all`;
+          const searchProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(searchTarget)}`;
           
-          const searchData = await searchRes.json();
+          const searchRes = await fetch(searchProxy);
+          if (!searchRes.ok) throw new Error("Proxy error");
+          
+          const searchJson = await searchRes.json();
+          if (!searchJson.contents) throw new Error("Empty contents");
+          const searchData = JSON.parse(searchJson.contents);
+          
           const video = searchData.items?.find((item: any) => item.type === 'stream');
           if (!video) throw new Error("No video");
 
-          const videoId = video.url.split('v=')[1]?.split('&')[0];
-          const streamRes = await fetch(`${apiBase}/streams/${videoId}`);
-          const streamData = await streamRes.json();
+          // Извлекаем ID
+          const videoId = video.url.split('v=')[1]?.split('&')[0] || video.url.split('/watch?v=')[1];
+          if (!videoId) throw new Error("No ID");
+
+          // Запрос прямых ссылок на потоки тоже через прокси
+          const streamTarget = `${apiBase}/streams/${videoId}`;
+          const streamProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(streamTarget)}`;
           
+          const streamRes = await fetch(streamProxy);
+          const streamJson = await streamRes.json();
+          const streamData = JSON.parse(streamJson.contents);
+          
+          // Выбираем лучший аудиопоток
           const bestAudio = streamData.audioStreams?.find((s: any) => s.mimeType?.includes('audio/mp4')) 
                          || streamData.audioStreams?.sort((a: any, b: any) => b.bitrate - a.bitrate)[0];
                          
           if (!bestAudio?.url) throw new Error("No url");
+          
+          // Саму ссылку возвращаем как есть — браузер вставит её в <audio> и CORS ругаться не будет
           return bestAudio.url;
         })
       );
