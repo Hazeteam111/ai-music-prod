@@ -13,19 +13,17 @@ interface TrackData {
 const PIPED_INSTANCES = [
   "https://pipedapi.kavin.rocks",
   "https://pipedapi.smnz.de",
-  "https://pipedapi.adminforge.de",
-  "https://pipedapi.moomoo.me",
-  "https://pipedapi.syncpundit.io"
+  "https://pipedapi.adminforge.de"
 ];
 
-// Хелпер: обрывает запрос, если сервер "тупит" дольше 3.5 секунд
-const fetchWithTimeout = async (url: string, ms = 3500) => {
+// Хелпер с таймаутом (4 секунды)
+const fetchWithTimeout = async (url: string, ms = 4000) => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), ms);
   try {
     const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timeoutId);
-    if (!res.ok) throw new Error(`Ошибка сервера: ${res.status}`);
+    if (!res.ok) throw new Error(`Ошибка: ${res.status}`);
     return res;
   } catch (error) {
     clearTimeout(timeoutId);
@@ -39,6 +37,8 @@ export default function Home() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Добавляем флаг, чтобы понимать, играет полный трек или резервное превью
+  const [isPreview, setIsPreview] = useState(false); 
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) {
@@ -50,47 +50,70 @@ export default function Home() {
     setError(null);
     setTrackData(null);
     setAudioUrl(null);
+    setIsPreview(false);
 
     try {
-      // Шаг 1: Быстро получаем метаданные
+      // Шаг 1: Получаем метаданные (через твой бэкенд)
       const metaResponse = await fetch(`/api/spotify?q=${encodeURIComponent(searchQuery)}`);
       if (!metaResponse.ok) throw new Error("Трек не найден в базе");
       const track: TrackData = await metaResponse.json();
       setTrackData(track);
 
-      // Шаг 2: Прямая параллельная атака на серверы без прокси с тайм-аутом
-      const query = `${track.artist} ${track.title} audio`;
-      
-      const streamUrl = await Promise.any(
-        PIPED_INSTANCES.map(async (apiBase) => {
-          // Ищем ID видео (максимум 3.5 сек ожидания)
-          const searchRes = await fetchWithTimeout(`${apiBase}/search?q=${encodeURIComponent(query)}&filter=all`, 3500);
-          const searchData = await searchRes.json();
-          
-          const video = searchData.items?.find((item: any) => item.type === 'stream');
-          if (!video) throw new Error("Видео не найдено");
+      const query = `${track.artist} ${track.title}`;
+      let finalStreamUrl = null;
+      let isFallback = false;
 
-          const videoId = video.url.split('v=')[1]?.split('&')[0] || video.url.split('/watch?v=')[1];
-          if (!videoId) throw new Error("Нет ID");
+      // Шаг 2: Пробуем достать полный трек с Piped через быстрый CORS-прокси
+      try {
+        finalStreamUrl = await Promise.any(
+          PIPED_INSTANCES.map(async (apiBase) => {
+            const searchTarget = `${apiBase}/search?q=${encodeURIComponent(query + ' audio')}&filter=all`;
+            // Используем corsproxy.io для обхода блокировок Cloudflare
+            const proxySearch = `https://corsproxy.io/?${encodeURIComponent(searchTarget)}`;
+            
+            const searchRes = await fetchWithTimeout(proxySearch, 4000);
+            const searchData = await searchRes.json();
+            
+            const video = searchData.items?.find((item: any) => item.type === 'stream');
+            if (!video) throw new Error("Видео не найдено");
 
-          // Забираем аудиопоток (максимум 3.5 сек ожидания)
-          const streamRes = await fetchWithTimeout(`${apiBase}/streams/${videoId}`, 3500);
-          const streamData = await streamRes.json();
-          
-          const bestAudio = streamData.audioStreams?.find((s: any) => s.mimeType?.includes('audio/mp4')) 
-                         || streamData.audioStreams?.sort((a: any, b: any) => b.bitrate - a.bitrate)[0];
-                         
-          if (!bestAudio?.url) throw new Error("Нет потока");
-          
-          return bestAudio.url;
-        })
-      );
+            const videoId = video.url.split('v=')[1]?.split('&')[0] || video.url.split('/watch?v=')[1];
 
-      setAudioUrl(streamUrl);
+            const streamTarget = `${apiBase}/streams/${videoId}`;
+            const proxyStream = `https://corsproxy.io/?${encodeURIComponent(streamTarget)}`;
+            
+            const streamRes = await fetchWithTimeout(proxyStream, 4000);
+            const streamData = await streamRes.json();
+            
+            const bestAudio = streamData.audioStreams?.find((s: any) => s.mimeType?.includes('audio/mp4')) 
+                           || streamData.audioStreams?.sort((a: any, b: any) => b.bitrate - a.bitrate)[0];
+                           
+            if (!bestAudio?.url) throw new Error("Нет потока");
+            return bestAudio.url; // Саму аудиоссылку проксировать не нужно, браузер её съест
+          })
+        );
+      } catch (pipedError) {
+        // ШАГ 3: ЖЕЛЕЗОБЕТОННЫЙ РЕЗЕРВ (Apple Music API)
+        // Если пираты заблокировали запросы, мы тихо переключаемся на легальное 30-сек превью.
+        console.warn("Piped недоступен, переключаемся на резерв Apple Music...");
+        
+        const appleRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&limit=1`);
+        const appleData = await appleRes.json();
+        
+        if (appleData.results && appleData.results[0]?.previewUrl) {
+          finalStreamUrl = appleData.results[0].previewUrl;
+          isFallback = true;
+        } else {
+          throw new Error("Абсолютно все серверы отказали в доступе.");
+        }
+      }
+
+      setAudioUrl(finalStreamUrl);
+      setIsPreview(isFallback);
 
     } catch (err) {
       console.error(err);
-      setError("Аудиопоток временно недоступен. Серверы перегружены, попробуйте еще раз.");
+      setError("Аудиопоток временно недоступен. Попробуйте другой трек.");
     } finally {
       setLoading(false);
     }
@@ -108,7 +131,7 @@ export default function Home() {
       <div className="text-center mb-12">
         <h1 className="text-5xl font-bold text-textPrimary mb-2">AI Music</h1>
         <p className="text-textSecondary text-lg">
-          Deezer metadata × Piped Direct Audio
+          Smart Audio Engine
         </p>
       </div>
 
@@ -177,7 +200,9 @@ export default function Home() {
                       Браузер не поддерживает плеер.
                     </audio>
                   </div>
-                  <p className="text-xs text-textSecondary text-center">🎵 Сейчас играет</p>
+                  <p className="text-xs text-textSecondary text-center">
+                    🎵 {isPreview ? "Сейчас играет (Демо 30 сек)" : "Сейчас играет (Полная версия)"}
+                  </p>
                 </div>
               ) : loading ? (
                 <div className="bg-background rounded-lg p-8 border border-surface flex items-center justify-center">
@@ -193,7 +218,7 @@ export default function Home() {
           </div>
 
           <button
-            onClick={() => { setSearchQuery(""); setTrackData(null); setAudioUrl(null); setError(null); }}
+            onClick={() => { setSearchQuery(""); setTrackData(null); setAudioUrl(null); setError(null); setIsPreview(false); }}
             className="w-full mt-4 px-4 py-2 text-textSecondary hover:text-textPrimary border border-textSecondary hover:border-textPrimary rounded-lg transition-colors"
           >
             ← Найти другой трек
