@@ -14,8 +14,24 @@ const PIPED_INSTANCES = [
   "https://pipedapi.kavin.rocks",
   "https://pipedapi.smnz.de",
   "https://pipedapi.adminforge.de",
-  "https://pipedapi.moomoo.me"
+  "https://pipedapi.moomoo.me",
+  "https://pipedapi.syncpundit.io"
 ];
+
+// Хелпер: обрывает запрос, если сервер "тупит" дольше 3.5 секунд
+const fetchWithTimeout = async (url: string, ms = 3500) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ms);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (!res.ok) throw new Error(`Ошибка сервера: ${res.status}`);
+    return res;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
+};
 
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -36,50 +52,36 @@ export default function Home() {
     setAudioUrl(null);
 
     try {
-      // Шаг 1: Метаданные (обложка и точное название) идут через наш бэкенд
+      // Шаг 1: Быстро получаем метаданные
       const metaResponse = await fetch(`/api/spotify?q=${encodeURIComponent(searchQuery)}`);
       if (!metaResponse.ok) throw new Error("Трек не найден в базе");
       const track: TrackData = await metaResponse.json();
       setTrackData(track);
 
-      // Шаг 2: Ищем аудио, оборачивая запросы в AllOrigins для обхода CORS
+      // Шаг 2: Прямая параллельная атака на серверы без прокси с тайм-аутом
       const query = `${track.artist} ${track.title} audio`;
       
       const streamUrl = await Promise.any(
         PIPED_INSTANCES.map(async (apiBase) => {
-          // Запрос поиска оборачиваем в CORS-прокси
-          const searchTarget = `${apiBase}/search?q=${encodeURIComponent(query)}&filter=all`;
-          const searchProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(searchTarget)}`;
-          
-          const searchRes = await fetch(searchProxy);
-          if (!searchRes.ok) throw new Error("Proxy error");
-          
-          const searchJson = await searchRes.json();
-          if (!searchJson.contents) throw new Error("Empty contents");
-          const searchData = JSON.parse(searchJson.contents);
+          // Ищем ID видео (максимум 3.5 сек ожидания)
+          const searchRes = await fetchWithTimeout(`${apiBase}/search?q=${encodeURIComponent(query)}&filter=all`, 3500);
+          const searchData = await searchRes.json();
           
           const video = searchData.items?.find((item: any) => item.type === 'stream');
-          if (!video) throw new Error("No video");
+          if (!video) throw new Error("Видео не найдено");
 
-          // Извлекаем ID
           const videoId = video.url.split('v=')[1]?.split('&')[0] || video.url.split('/watch?v=')[1];
-          if (!videoId) throw new Error("No ID");
+          if (!videoId) throw new Error("Нет ID");
 
-          // Запрос прямых ссылок на потоки тоже через прокси
-          const streamTarget = `${apiBase}/streams/${videoId}`;
-          const streamProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(streamTarget)}`;
+          // Забираем аудиопоток (максимум 3.5 сек ожидания)
+          const streamRes = await fetchWithTimeout(`${apiBase}/streams/${videoId}`, 3500);
+          const streamData = await streamRes.json();
           
-          const streamRes = await fetch(streamProxy);
-          const streamJson = await streamRes.json();
-          const streamData = JSON.parse(streamJson.contents);
-          
-          // Выбираем лучший аудиопоток
           const bestAudio = streamData.audioStreams?.find((s: any) => s.mimeType?.includes('audio/mp4')) 
                          || streamData.audioStreams?.sort((a: any, b: any) => b.bitrate - a.bitrate)[0];
                          
-          if (!bestAudio?.url) throw new Error("No url");
+          if (!bestAudio?.url) throw new Error("Нет потока");
           
-          // Саму ссылку возвращаем как есть — браузер вставит её в <audio> и CORS ругаться не будет
           return bestAudio.url;
         })
       );
@@ -88,7 +90,7 @@ export default function Home() {
 
     } catch (err) {
       console.error(err);
-      setError("Аудиопоток временно недоступен. Попробуйте другой трек.");
+      setError("Аудиопоток временно недоступен. Серверы перегружены, попробуйте еще раз.");
     } finally {
       setLoading(false);
     }
